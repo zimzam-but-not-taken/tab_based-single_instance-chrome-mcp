@@ -75,6 +75,13 @@ interface McpContextOptions {
   navigationTimeout?: number;
   // Whether extension tools and targets are enabled.
   categoryExtensions?: boolean;
+  // Whether only pages this context opened (and popups they spawned) are
+  // exposed. Used with a browser shared between several server instances, so
+  // each one sees and closes only its own tabs.
+  ownedPagesOnly?: boolean;
+  // Initial viewport for pages this context opens in a shared browser. A
+  // launched browser gets its viewport from BrowserManager instead.
+  viewport?: {width: number; height: number};
   // Callback when a notification should be emitted to MCP client.
   onNotification?: (message: string) => void;
 }
@@ -99,6 +106,9 @@ export class McpContext implements Context {
   #workers = new Map<Target, McpWorker>();
 
   #mcpPages = new Map<Target, McpPage>();
+  // Targets this context opened itself, plus popups they spawned. Only
+  // consulted when `ownedPagesOnly` is set.
+  #ownedTargets = new Set<Target>();
   #selectedPage?: McpPage;
   #selectedPageFallback?: {wasClosed: boolean};
 
@@ -143,6 +153,10 @@ export class McpContext implements Context {
   }
 
   async #init(): Promise<void> {
+    if (this.#options.ownedPagesOnly) {
+      // Start in a tab of our own instead of adopting whatever is open.
+      await this.ensurePage();
+    }
     await this.createPagesSnapshot();
     const workers = this.createWorkersSnapshot();
 
@@ -187,6 +201,7 @@ export class McpContext implements Context {
         mcpPage.dispose();
         this.#mcpPages.delete(target);
       }
+      this.#ownedTargets.delete(target);
       this.#workers.delete(target);
     } catch (err) {
       this.logger?.('Error handling targetdestroyed', err);
@@ -338,18 +353,66 @@ export class McpContext implements Context {
     } else {
       page = await this.browser.newPage({background});
     }
+    this.#ownedTargets.add(page.target());
+    const viewport = this.#options.viewport;
+    if (this.#options.ownedPagesOnly && viewport) {
+      await page.resize({
+        contentWidth: viewport.width,
+        contentHeight: viewport.height,
+      });
+    }
     const mcpPage = this.#createMcpPage(page.target());
     await mcpPage.init();
     this.selectPage(mcpPage);
     await this.createPagesSnapshot();
     return mcpPage;
   }
+
+  /**
+   * With `ownedPagesOnly`, makes sure there is at least one open page of our
+   * own, opening a blank one if every tab was closed. No-op otherwise: a
+   * launched browser always has a page, and closing the last one is refused.
+   */
+  async ensurePage(): Promise<void> {
+    if (!this.#options.ownedPagesOnly) {
+      return;
+    }
+    if (this.getPages().some(page => !page.isClosed())) {
+      return;
+    }
+    await this.newPage();
+  }
+
+  /**
+   * Closes every page this context opened (and the isolated contexts it
+   * created), leaving pages of other server instances untouched. Only does
+   * anything with `ownedPagesOnly`.
+   */
+  async closeOwnedPages(): Promise<void> {
+    if (!this.#options.ownedPagesOnly) {
+      return;
+    }
+    const pages = this.getPages();
+    this.#mcpPages.clear();
+    await Promise.allSettled(
+      pages.filter(page => !page.isClosed()).map(page => page.close()),
+    );
+    await Promise.allSettled(
+      Array.from(this.#isolatedContexts.values())
+        .filter(ctx => !ctx.closed)
+        .map(ctx => ctx.close()),
+    );
+    this.#isolatedContexts.clear();
+    this.#ownedTargets.clear();
+  }
+
   async closePage(pageId: number): Promise<void> {
-    if (this.#mcpPages.size === 1) {
+    if (this.#mcpPages.size === 1 && !this.#options.ownedPagesOnly) {
       throw new Error(CLOSE_PAGE_ERROR);
     }
     const page = this.getPageById(pageId);
     this.#mcpPages.delete(page.target);
+    this.#ownedTargets.delete(page.target);
     await page.close();
   }
 
@@ -631,7 +694,27 @@ export class McpContext implements Context {
     return pages;
   }
 
+  /**
+   * Whether `target` belongs to this context: opened by it, or opened (as a
+   * popup/window) from a page that does. Ownership is inherited eagerly so
+   * popups of popups are found through their direct opener.
+   */
+  #isOwnedTarget(target: Target): boolean {
+    if (this.#ownedTargets.has(target)) {
+      return true;
+    }
+    const opener = target.opener();
+    if (opener && this.#ownedTargets.has(opener)) {
+      this.#ownedTargets.add(target);
+      return true;
+    }
+    return false;
+  }
+
   #isPageTarget(target: Target): boolean {
+    if (this.#options.ownedPagesOnly && !this.#isOwnedTarget(target)) {
+      return false;
+    }
     const existingMcpPage = this.#mcpPages.get(target);
     const url = existingMcpPage ? existingMcpPage.url() : target.url();
     if (

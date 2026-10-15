@@ -72,7 +72,7 @@ export const selectPage = defineTool((args: ParsedArguments) => ({
 
 export const closePage = defineTool(() => ({
   name: 'close_page',
-  description: `Closes the page by its index. The last open page cannot be closed.`,
+  description: `Closes the page by its index. Close pages you no longer need; with a shared browser the last page can be closed too and a blank one is reopened on demand.`,
   annotations: {
     category: ToolCategory.NAVIGATION,
     readOnlyHint: false,

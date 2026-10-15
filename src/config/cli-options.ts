@@ -159,7 +159,7 @@ export const commands: Commands = {
   },
   close_page: {
     description:
-      'Closes the page by its index. The last open page cannot be closed.',
+      'Closes the page by its index. Close pages you no longer need; with a shared browser the last page can be closed too and a blank one is reopened on demand.',
     category: 'Navigation automation',
     args: {
       pageId: {

@@ -10,6 +10,24 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type {ParsedArguments} from './config/ConfigParser.js';
+import {
+  acquireLaunchLock,
+  buildRegularUserAgent,
+  countBusyPages,
+  detectChromeMajorVersion,
+  ensureWatchdog,
+  findInPath,
+  isSharedBrowserStale,
+  readSharedBrowserState,
+  resolveDisplayMode,
+  resolveSharedEndpoint,
+  shutdownSharedBrowser,
+  spawnSharedBrowser,
+  startVirtualDisplay,
+  VIRTUAL_DISPLAY_SIZE,
+  type DisplayMode,
+  type VirtualDisplay,
+} from './SharedBrowser.js';
 import type {
   Browser,
   ChromeReleaseChannel,
@@ -18,6 +36,14 @@ import type {
 import {Mutex, puppeteer} from './third_party/index.js';
 import {logger, puppeteerLogger} from './utils/logger.js';
 import {isAllowedUrl} from './utils/url.js';
+
+/**
+ * Puppeteer flags that mark the browser as automated. `--enable-automation`
+ * sets `navigator.webdriver` and shows the "controlled by automated test
+ * software" bar; sites use both to block bots. Dropped from every launch so
+ * the browser looks like one a person opened.
+ */
+export const AUTOMATION_CHROME_ARGS = ['--enable-automation'];
 
 export interface BrowserManagerOptions {
   logFile?: fs.WriteStream;
@@ -32,7 +58,8 @@ class BrowserAttempt {}
 
 export class BrowserManager {
   #browser?: Browser;
-  #browserMode?: 'launched' | 'connected';
+  #browserMode?: 'launched' | 'connected' | 'shared';
+  #sharedUserDataDir?: string;
   #initPromise?: Promise<Browser>;
   #mutex = new Mutex();
   #closingCount = 0;
@@ -57,6 +84,58 @@ export class BrowserManager {
       }
       return isAllowedUrl(url, {categoryExtensions: enableExtensions});
     };
+  }
+
+  /**
+   * Whether this server shares one long-lived Chrome with other servers
+   * instead of launching (and later closing) its own. Explicit connection
+   * targets and `--isolated` take precedence over `--shared-browser`.
+   */
+  static isSharedMode(args: ParsedArguments): boolean {
+    return (
+      Boolean(args.sharedBrowser) &&
+      !args.isolated &&
+      !args.browserUrl &&
+      !args.wsEndpoint &&
+      !args.autoConnect
+    );
+  }
+
+  /**
+   * The display mode the user asked for. `--headless` is kept as a shorthand
+   * for `--display-mode=headless`.
+   */
+  static requestedDisplayMode(args: ParsedArguments): DisplayMode {
+    if (args.headless) {
+      return 'headless';
+    }
+    return args.displayMode ?? 'virtual';
+  }
+
+  /**
+   * Starts a private Xvfb display for a browser launched by this server.
+   * Returns `undefined`, after saying why, when no virtual display can be
+   * had here; the caller then runs headless.
+   */
+  static async startVirtualDisplay(): Promise<VirtualDisplay | undefined> {
+    const {mode, xvfbRunPath, reason} = resolveDisplayMode(
+      'virtual',
+      os.platform(),
+      findInPath('Xvfb'),
+      'Xvfb',
+    );
+    if (mode !== 'virtual' || !xvfbRunPath) {
+      console.error(`[chrome-devtools-mcp] ${reason}`);
+      return undefined;
+    }
+    try {
+      return await startVirtualDisplay(xvfbRunPath);
+    } catch (err) {
+      console.error(
+        `[chrome-devtools-mcp] Could not start a virtual display; running headless instead. ${err instanceof Error ? err.message : err}`,
+      );
+      return undefined;
+    }
   }
 
   static detectDisplay(): void {
@@ -201,26 +280,19 @@ export class BrowserManager {
     ) {
       return await this.#connect();
     }
+    if (BrowserManager.isSharedMode(this.#serverArgs)) {
+      return await this.#connectShared();
+    }
     return await this.#launch();
   }
 
-  async #launch(): Promise<Browser> {
-    const {
-      channel,
-      executablePath,
-      headless,
-      isolated = false,
-      categoryExtensions: enableExtensions,
-      viaCli,
-      viewport,
-      acceptInsecureCerts,
-      experimentalDevtools: devtools = false,
-      blockedUrlPattern: blocklist,
-      allowedUrlPattern: allowlist,
-      ignoreDefaultChromeArg,
-      proxyServer,
-    } = this.#serverArgs;
-
+  /**
+   * Resolves the profile directory. Isolated launches return `undefined` so
+   * Puppeteer creates a temporary profile; otherwise the persistent profile
+   * under `~/.cache` is created on demand.
+   */
+  async #resolveUserDataDir(): Promise<string | undefined> {
+    const {channel, isolated = false, viaCli} = this.#serverArgs;
     const profileDirName =
       channel && channel !== 'stable'
         ? `chrome-profile-${channel}`
@@ -234,19 +306,239 @@ export class BrowserManager {
         viaCli ? 'chrome-devtools-mcp-cli' : 'chrome-devtools-mcp',
         profileDirName,
       );
+    }
+    if (userDataDir) {
       await fs.promises.mkdir(userDataDir, {
         recursive: true,
       });
     }
+    return userDataDir;
+  }
+
+  #puppeteerChannel(): ChromeReleaseChannel {
+    const {channel} = this.#serverArgs;
+    return channel && channel !== 'stable' ? `chrome-${channel}` : 'chrome';
+  }
+
+  async #sharedConnectOptions(): Promise<
+    Parameters<typeof puppeteer.connect>[0]
+  > {
+    const {
+      categoryExtensions: enableExtensions,
+      blockedUrlPattern: blocklist,
+      allowedUrlPattern: allowlist,
+      acceptInsecureCerts,
+    } = this.#serverArgs;
+    return {
+      targetFilter: BrowserManager.makeTargetFilter(enableExtensions),
+      defaultViewport: null,
+      handleDevToolsAsPage: true,
+      acceptInsecureCerts,
+      blocklist,
+      allowlist,
+      logger: puppeteerLogger,
+    };
+  }
+
+  /**
+   * Connects to the shared Chrome for this profile, launching it first when
+   * none is running. See SharedBrowser.ts for the overall scheme.
+   */
+  async #connectShared(): Promise<Browser> {
+    const userDataDir = await this.#resolveUserDataDir();
+    if (!userDataDir) {
+      throw new Error('A user data directory is required for a shared browser');
+    }
+    this.#sharedUserDataDir = userDataDir;
+    const connectOptions = await this.#sharedConnectOptions();
+
+    let browser = await this.#tryConnectShared(userDataDir, connectOptions);
+    if (browser && (await this.#restartIfStaleAndIdle(browser, userDataDir))) {
+      browser = undefined;
+    }
+    if (!browser) {
+      const release = await acquireLaunchLock(userDataDir);
+      try {
+        // Another server may have launched Chrome while we waited for the lock.
+        browser = await this.#tryConnectShared(userDataDir, connectOptions);
+        if (!browser) {
+          const wsUrl = await this.#spawnShared(userDataDir);
+          browser = await puppeteer.connect({
+            ...connectOptions,
+            browserWSEndpoint: wsUrl,
+          });
+        }
+      } finally {
+        release();
+      }
+    }
+
+    logger?.('Connected to the shared browser');
+    try {
+      ensureWatchdog(
+        userDataDir,
+        this.#serverArgs.browserIdleTimeoutMinutes ?? 0,
+        this.#serverArgs.sharedBrowserPort,
+      );
+    } catch (err) {
+      logger?.('Failed to ensure the shared browser watchdog', err);
+    }
+    this.#browserMode = 'shared';
+    this.#browser = browser;
+    const shared = browser;
+    shared.once('disconnected', () => this.#evictIfCurrent(shared));
+    return shared;
+  }
+
+  async #tryConnectShared(
+    userDataDir: string,
+    connectOptions: Parameters<typeof puppeteer.connect>[0],
+  ): Promise<Browser | undefined> {
+    let wsUrl: string;
+    try {
+      wsUrl = await resolveSharedEndpoint(
+        userDataDir,
+        this.#serverArgs.sharedBrowserPort,
+      );
+    } catch {
+      return undefined;
+    }
+    try {
+      return await puppeteer.connect({
+        ...connectOptions,
+        browserWSEndpoint: wsUrl,
+      });
+    } catch (err) {
+      logger?.(
+        `Shared browser endpoint ${wsUrl} is not reachable, launching a new one`,
+        err,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Replaces a browser older than `--browser-max-age-hours`, but only while no
+   * tab of any server is doing anything, so another agent's work is never cut
+   * off. Returns true when the browser was shut down.
+   */
+  async #restartIfStaleAndIdle(
+    browser: Browser,
+    userDataDir: string,
+  ): Promise<boolean> {
+    const maxAgeHours = this.#serverArgs.browserMaxAgeHours ?? 0;
+    const state = readSharedBrowserState(userDataDir);
+    if (!isSharedBrowserStale(state, maxAgeHours)) {
+      return false;
+    }
+    const busy = countBusyPages(browser);
+    if (busy > 0) {
+      logger?.(
+        `Shared browser is older than ${maxAgeHours}h but ${busy} page(s) are in use; restart deferred`,
+      );
+      return false;
+    }
+    logger?.(`Shared browser is older than ${maxAgeHours}h; restarting it`);
+    await shutdownSharedBrowser(browser, userDataDir);
+    return true;
+  }
+
+  async #spawnShared(userDataDir: string): Promise<string> {
+    const {
+      executablePath: configuredExecutablePath,
+      proxyServer,
+      chromeArg,
+      sharedBrowserPort,
+    } = this.#serverArgs;
+    const executablePath =
+      configuredExecutablePath ??
+      (await puppeteer.executablePath(this.#puppeteerChannel()));
+
+    const {mode, xvfbRunPath, reason} = resolveDisplayMode(
+      BrowserManager.requestedDisplayMode(this.#serverArgs),
+      os.platform(),
+      findInPath('xvfb-run'),
+    );
+    if (reason) {
+      console.error(`[chrome-devtools-mcp] ${reason}`);
+    }
+    if (mode === 'headed') {
+      BrowserManager.detectDisplay();
+    }
+    let userAgent: string | undefined;
+    if (mode === 'headless') {
+      const major = await detectChromeMajorVersion(executablePath);
+      if (major !== undefined) {
+        userAgent = buildRegularUserAgent(major);
+      }
+    }
+    return await spawnSharedBrowser(
+      {
+        executablePath,
+        userDataDir,
+        displayMode: mode,
+        debuggingPort: sharedBrowserPort,
+        userAgent,
+        proxyServer,
+        extraArgs: chromeArg,
+      },
+      xvfbRunPath,
+    );
+  }
+
+  async #launch(): Promise<Browser> {
+    const {
+      executablePath,
+      categoryExtensions: enableExtensions,
+      viewport,
+      acceptInsecureCerts,
+      experimentalDevtools: devtools = false,
+      blockedUrlPattern: blocklist,
+      allowedUrlPattern: allowlist,
+      ignoreDefaultChromeArg,
+      proxyServer,
+    } = this.#serverArgs;
+
+    const userDataDir = await this.#resolveUserDataDir();
 
     const args: LaunchOptions['args'] = [...(this.#serverArgs.chromeArg ?? [])];
     if (proxyServer) {
       args.push(`--proxy-server=${proxyServer}`);
     }
-    args.push('--hide-crash-restore-bubble');
+    args.push(
+      '--hide-crash-restore-bubble',
+      '--no-default-browser-check',
+      '--disable-blink-features=AutomationControlled',
+    );
 
-    const ignoreDefaultArgs: LaunchOptions['ignoreDefaultArgs'] =
-      ignoreDefaultChromeArg ?? false;
+    const ignoreDefaultArgs: LaunchOptions['ignoreDefaultArgs'] = [
+      ...AUTOMATION_CHROME_ARGS,
+      ...(ignoreDefaultChromeArg ?? []),
+    ];
+
+    let mode = BrowserManager.requestedDisplayMode(this.#serverArgs);
+    let virtualDisplay: VirtualDisplay | undefined;
+    if (mode === 'virtual') {
+      virtualDisplay = await BrowserManager.startVirtualDisplay();
+      mode = virtualDisplay ? 'virtual' : 'headless';
+    }
+    const headless = mode === 'headless';
+    let env: Record<string, string | undefined> | undefined;
+    if (virtualDisplay) {
+      // Keep Chrome on the Xvfb X server even when the desktop session is
+      // Wayland, and let WebGL work without a real GPU.
+      env = {
+        ...process.env,
+        DISPLAY: virtualDisplay.display,
+        WAYLAND_DISPLAY: undefined,
+      };
+      args.push(
+        '--ozone-platform=x11',
+        '--enable-unsafe-swiftshader',
+        `--window-size=${VIRTUAL_DISPLAY_SIZE.width},${VIRTUAL_DISPLAY_SIZE.height}`,
+        '--window-position=0,0',
+      );
+    }
 
     if (headless) {
       args.push('--screen-info={3840x2160}');
@@ -256,11 +548,10 @@ export class BrowserManager {
       args.push('--auto-open-devtools-for-tabs');
     }
     if (!executablePath) {
-      puppeteerChannel =
-        channel && channel !== 'stable' ? `chrome-${channel}` : 'chrome';
+      puppeteerChannel = this.#puppeteerChannel();
     }
 
-    if (!headless) {
+    if (mode === 'headed') {
       BrowserManager.detectDisplay();
     }
 
@@ -274,6 +565,7 @@ export class BrowserManager {
         userDataDir,
         pipe: true,
         headless,
+        env,
         args,
         ignoreDefaultArgs,
         acceptInsecureCerts,
@@ -296,6 +588,10 @@ export class BrowserManager {
           contentHeight: viewport.height,
         });
       }
+      if (virtualDisplay) {
+        const display = virtualDisplay;
+        browser.once('disconnected', () => display.close());
+      }
       this.#browserMode = 'launched';
       this.#browser = browser;
       const launched = browser;
@@ -305,6 +601,7 @@ export class BrowserManager {
       await browser?.close().catch(() => {
         // Best-effort cleanup if post-launch setup failed.
       });
+      virtualDisplay?.close();
       if (
         userDataDir &&
         error instanceof Error &&
@@ -503,6 +800,20 @@ export class BrowserManager {
     if (mode === 'launched') {
       await this.#closeLaunchedBrowser(browser);
       return;
+    }
+    if (mode === 'shared' && this.#sharedUserDataDir) {
+      // Last chance to retire an old browser without interrupting anyone: our
+      // own tabs are already closed at this point, so if nothing else is in
+      // use the next server gets a fresh Chrome.
+      try {
+        if (
+          await this.#restartIfStaleAndIdle(browser, this.#sharedUserDataDir)
+        ) {
+          return;
+        }
+      } catch (err) {
+        logger?.('Failed to retire the stale shared browser', err);
+      }
     }
     await browser.disconnect().catch(err => {
       logger?.('Failed to disconnect from browser', err);

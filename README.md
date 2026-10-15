@@ -1,146 +1,122 @@
-# Chrome DevTools for agents
+# chrome-devtools-mcp (shared-browser fork)
 
-[![npm chrome-devtools-mcp package](https://img.shields.io/npm/v/chrome-devtools-mcp.svg)](https://npmjs.org/package/chrome-devtools-mcp)
+A fork of Google's [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) that changes how the browser is run. Upstream starts a new Chrome for every server instance, shows it on your desktop and marks it as automated. This fork keeps **one warm Chrome that every instance shares**, runs it **on an invisible display** and makes it **look like a normal browser** to the sites it visits.
 
-Chrome DevTools for agents (`chrome-devtools-mcp`) lets your coding agent (such as Antigravity, Claude, Cursor or Copilot)
-control and inspect a live Chrome browser. It acts as a Model-Context-Protocol
-(MCP) server, giving your AI coding assistant access to the full power of
-Chrome DevTools for reliable automation, in-depth debugging, and performance analysis.
-A [CLI][cli] is also provided for use without MCP.
+The tools themselves (navigation, input, snapshots, network, performance, Lighthouse, …) are unchanged. See the [Tool Reference](./docs/tool-reference.md).
 
-[Tool reference][tool-reference] | [Changelog][changelog] | [Contributing][contributing] | [Troubleshooting][troubleshooting] | [Design Principles][design-principles]
+## What's different from upstream
 
-## Key features
+### One shared, long-lived Chrome
 
-- **Get performance insights**: Uses [Chrome
-  DevTools](https://github.com/ChromeDevTools/devtools-frontend) to record
-  traces and extract actionable performance insights.
-- **Advanced browser debugging**: Analyze network requests, take screenshots and
-  check browser console messages (with source-mapped stack traces).
-- **Reliable automation**. Uses
-  [puppeteer](https://github.com/puppeteer/puppeteer) to automate actions in
-  Chrome and automatically wait for action results.
+- The first server instance launches Chrome **detached**, so it outlives that instance. Later instances find it and connect to it instead of starting their own.
+- Each instance only sees and controls **the tabs it opened** (plus popups those tabs spawn). `list_pages`, `select_page` and `close_page` never touch another instance's tabs.
+- When an instance exits it closes its own tabs and disconnects. Chrome stays running with a warm profile, so the next instance starts immediately.
+- If every tab is closed, a blank one is reopened the next time a tool needs a page. `close_page` can therefore close the last page, which upstream refuses.
+- Two instances starting at the same moment won't both launch Chrome: launches are serialised with a lock file in the profile directory.
 
-## Disclaimers
+### Lifecycle
 
-`chrome-devtools-mcp` exposes content of the browser instance to the MCP clients
-allowing them to inspect, debug, and modify any data in the browser or DevTools.
-Avoid sharing sensitive or personal information that you don't want to share with
-MCP clients.
+- **Idle shutdown:** a small watchdog process started next to Chrome closes it once no tab has had anything loaded for `--browserIdleTimeoutMinutes` (default 60). Blank tabs don't count. The next instance simply launches Chrome again.
+- **Daily restart:** once Chrome is older than `--browserMaxAgeHours` (default 24) it is restarted, but only while no tab of any instance is in use, so nobody's work is interrupted.
 
-`chrome-devtools-mcp` officially supports Google Chrome and [Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing/) only.
-Other Chromium-based browsers may work, but this is not guaranteed, and you may encounter unexpected behavior. Use at your own discretion.
-We are committed to providing fixes and support for the latest version of [Extended Stable Chrome](https://chromiumdash.appspot.com/schedule).
+### No window on your desktop
 
-Performance tools may send trace URLs to the Google CrUX API to fetch real-user
-experience data. This helps provide a holistic performance picture by
-presenting field data alongside lab data. This data is collected by the [Chrome
-User Experience Report (CrUX)](https://developer.chrome.com/docs/crux). To disable
-this, run with the `--no-performance-crux` flag.
+`--displayMode` decides where the browser window goes:
 
-## **Usage statistics**
+| Mode                | What you get                                                                                                                                                                  |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `virtual` (default) | A real, headed Chrome on an invisible Xvfb display. Nothing pops up and sites see an ordinary browser. Falls back to `headless` if Xvfb isn't installed, or on macOS/Windows. |
+| `headless`          | Chrome's new headless mode. In the shared browser the `HeadlessChrome` user agent is rewritten to the regular `Chrome/…` one.                                                 |
+| `headed`            | A normal window on your desktop.                                                                                                                                              |
 
-Google collects usage statistics (such as tool invocation success rates, latency, and environment information) to improve the reliability and performance of Chrome DevTools MCP.
+This applies both to the shared browser and to a private one (`--no-shared-browser`). `--headless` still works as a shorthand for `--displayMode=headless`.
 
-Data collection is **enabled by default**. You can opt-out by passing the `--no-usage-statistics` flag when starting the server:
+### Looks like a normal browser
 
-```json
-"args": ["-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"]
+Chrome is launched without `--enable-automation` and Puppeteer's other test-only switches, and with `AutomationControlled` disabled. So `navigator.webdriver` is `false` and the "Chrome is being controlled by automated test software" bar never appears.
+
+### Other CDP tools can share the same Chrome
+
+The shared Chrome listens on `http://127.0.0.1:9222` (`--sharedBrowserPort`), so other CDP clients can attach to the same browser and profile. For example, browser-use's browser-harness (used by jev-ultrafast) works with `BU_CDP_URL=http://127.0.0.1:9222` and a `BU_NAME`. Their tabs count as "in use" for the idle shutdown and the daily restart too.
+
+## New options
+
+| Flag                          | Default   | Description                                                                                                                                                                                                      |
+| ----------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--sharedBrowser`             | `true`    | Share one Chrome between instances. `--no-shared-browser` gives each instance its own Chrome, closed on exit (upstream behaviour). Bypassed by `--isolated`, `--browserUrl`, `--wsEndpoint` and `--autoConnect`. |
+| `--sharedBrowserPort`         | `9222`    | DevTools port of the shared Chrome. `0` picks a random free port.                                                                                                                                                |
+| `--browserIdleTimeoutMinutes` | `60`      | Close the shared Chrome after this long with no tab in use. `0` keeps it running forever.                                                                                                                        |
+| `--browserMaxAgeHours`        | `24`      | Restart the shared Chrome once it is older than this, while idle. `0` disables restarts.                                                                                                                         |
+| `--displayMode`               | `virtual` | `virtual`, `headless` or `headed`, see above.                                                                                                                                                                    |
+
+All other upstream options still work. See the [Configuration Guide](./docs/configuration.md#shared-browser) for the full list and more detail on the shared browser.
+
+## Install and run
+
+Requirements: Node.js LTS, Chrome stable and, for the default `virtual` mode on Linux, Xvfb (`pacman -S xorg-server-xvfb` or `apt install xvfb`).
+
+```sh
+git clone git@github.com:voidclick-labs/chrome-devtools-mcp-fork.git
+cd chrome-devtools-mcp-fork
+npm ci
+npm run build
 ```
 
-Google handles this data in accordance with the [Google Privacy Policy](https://policies.google.com/privacy).
+Register the built server with your MCP client, e.g. Claude Code:
 
-Google's collection of usage statistics for Chrome DevTools MCP is independent from the Chrome browser's usage statistics. Opting out of Chrome metrics does not automatically opt you out of this tool, and vice-versa.
-
-Collection is disabled if `CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS` or `CI` env variables are set.
-
-## Update checks
-
-By default, the server periodically checks the npm registry for updates and logs a notification when a newer version is available.
-You can disable these update checks by setting the `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS` environment variable.
-
-## Requirements
-
-- [Node.js](https://nodejs.org/) [LTS](https://github.com/nodejs/Release#release-schedule) version.
-- [Chrome](https://www.google.com/chrome/) current stable version or newer.
-- [npm](https://www.npmjs.com/)
-
-## Getting started
-
-Add the following config to your MCP client:
-
-```json
-{
-  "mcpServers": {
-    "chrome-devtools": {
-      "command": "npx",
-      "args": ["-y", "chrome-devtools-mcp@latest"]
-    }
-  }
-}
+```sh
+claude mcp add --scope user chrome-devtools -- node "$PWD/build/src/bin/chrome-devtools-mcp.js"
 ```
 
-> [!NOTE]
-> Using `chrome-devtools-mcp@latest` ensures that your MCP client will always use the latest version of the Chrome DevTools MCP server.
-
-If you are interested in doing only basic browser tasks, use the `--slim` mode:
+or in a JSON client config:
 
 ```json
 {
   "mcpServers": {
     "chrome-devtools": {
-      "command": "npx",
-      "args": ["-y", "chrome-devtools-mcp@latest", "--slim", "--headless"]
+      "command": "node",
+      "args": [
+        "/path/to/chrome-devtools-mcp-fork/build/src/bin/chrome-devtools-mcp.js"
+      ]
     }
   }
 }
 ```
 
-See [Slim tool reference][slim-tool-reference].
+If you also have the official chrome-devtools-mcp plugin or server installed, disable it to avoid getting every tool twice.
 
-### MCP Client configuration
+After pulling changes, run `npm run build` again.
 
-For setup instructions specific to your editor or agent (e.g. Antigravity, Claude Code, Cursor, VS Code), please see our [Client Configurations Guide][client-configurations-guide].
+## Where things live
 
-### Your first prompt
+Everything is in the profile directory, `~/.cache/chrome-devtools-mcp/chrome-profile` by default:
 
-Enter the following prompt in your MCP Client to check if everything is working:
+- `shared-browser.json`: when the shared Chrome was launched, its pid and its watchdog's pid
+- `shared-browser.log`: Chrome's stderr
+- `shared-browser-watchdog.log`: the idle watchdog's log
+- `shared-browser.lock`: held briefly while an instance launches Chrome
 
+To check whether the shared Chrome is up: `curl http://127.0.0.1:9222/json/version`.
+
+## Development
+
+```sh
+npm run build                         # tsc + post-build
+npm run test                          # build and run all tests
+npm run test tests/SharedBrowser.test.ts   # a single test file
+npm run format                        # eslint --fix + prettier
 ```
-Check the performance of https://developers.chrome.com
-```
 
-Your MCP client should open the browser and record a performance trace.
+The fork's code is mainly in `src/SharedBrowser.ts` (launching, finding and retiring the shared Chrome), `src/shared-browser-watchdog.ts` (idle shutdown), `src/BrowserManager.ts` (shared vs. private launch, display modes) and `src/McpContext.ts` (per-instance tab ownership).
 
-> [!NOTE]
-> The MCP server will start the browser automatically once the MCP client uses a tool that requires a running browser instance. Connecting to the Chrome DevTools MCP server on its own will not automatically start the browser.
+## Kept from upstream
 
-## Tools
+- **Usage statistics:** Google's usage statistics collection is still enabled by default. Opt out with `--no-usage-statistics` or by setting `CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS`.
+- **Update checks:** the server still checks npm for new upstream versions. Disable that with `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS`.
+- **Disclaimer:** the server exposes the browser's content to your MCP client, so don't use it with sites or data you don't want the agent to see.
 
-If you run into any issues, checkout our [troubleshooting guide][troubleshooting].
-See the full [Tool Reference][tool-reference] for a complete list of all supported MCP capabilities.
+Other docs from upstream still apply: [advanced usage](./docs/advanced-usage.md), [client configurations](./docs/client-configurations.md), [CLI](./docs/cli.md), [troubleshooting](./docs/troubleshooting.md).
 
-## Configuration
+## License
 
-Find the complete list of server parameters (e.g., `--headless`, `--isolated`, `--slim`) and how to configure WebSocket connections in the [Configuration Guide][configuration-guide].
-
-## Advanced Usage
-
-For advanced features such as handling concurrent sessions, persistent user data directories, connecting to a running Chrome instance instead of starting a new one, or debugging on Android, see our [Advanced Usage Guide][advanced-usage-guide].
-
-## Integrating as a browser subagent
-
-If you are developing agentic tooling and want to provide an integrated browser subagent as part of your product, we recommend building on top of Chrome DevTools for agents.
-
-For a reference implementation, see the [Gemini CLI browser agent documentation](https://geminicli.com/docs/core/subagents/#browser-agent).
-
-[advanced-usage-guide]: ./docs/advanced-usage.md
-[changelog]: ./CHANGELOG.md
-[cli]: ./docs/cli.md
-[client-configurations-guide]: ./docs/client-configurations.md
-[configuration-guide]: ./docs/configuration.md
-[contributing]: ./CONTRIBUTING.md
-[design-principles]: ./docs/design-principles.md
-[slim-tool-reference]: ./docs/slim-tool-reference.md
-[tool-reference]: ./docs/tool-reference.md
-[troubleshooting]: ./docs/troubleshooting.md
+Apache-2.0, same as upstream. See [LICENSE](./LICENSE).

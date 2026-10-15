@@ -76,8 +76,34 @@ The Chrome DevTools MCP server supports the following configuration option:
   Custom headers for WebSocket connection in JSON format (e.g., '{"Authorization":"Bearer token"}'). Only works with --wsEndpoint.
   - **Type:** string
 
+- **`--sharedBrowser`/ `--shared-browser`**
+  Share one long-lived Chrome between all chrome-devtools-mcp instances using the same profile. The first instance launches Chrome detached, every instance works in its own tabs and closes them on shutdown, and Chrome keeps running (warm) for the next one. Ignored with --isolated, --browserUrl, --wsEndpoint or --autoConnect. Use --no-shared-browser to launch and close a private Chrome per instance.
+  - **Type:** boolean
+  - **Default:** `true`
+
+- **`--sharedBrowserPort`/ `--shared-browser-port`**
+  Local port the shared browser listens on for DevTools (CDP) connections, so other tools such as browser-use can attach to the same Chrome at http://127.0.0.1:<port>. 0 picks a random free port.
+  - **Type:** number
+  - **Default:** `9222`
+
+- **`--browserIdleTimeoutMinutes`/ `--browser-idle-timeout-minutes`**
+  Shut the shared browser down once no instance has had a tab open for this many minutes. A watchdog process started next to Chrome does this, so it works after every instance has exited; the next instance simply launches Chrome again. 0 keeps Chrome running forever.
+  - **Type:** number
+  - **Default:** `60`
+
+- **`--browserMaxAgeHours`/ `--browser-max-age-hours`**
+  Restart the shared browser once it is older than this many hours. The restart happens the next time an instance connects or disconnects while no tab is in use, so nobody is interrupted. 0 disables restarts.
+  - **Type:** number
+  - **Default:** `24`
+
+- **`--displayMode`/ `--display-mode`**
+  Where the browser window goes. `virtual`: a real window on an invisible Xvfb display (nothing appears on your desktop and sites see a normal browser; needs xvfb-run, falls back to headless). `headless`: no window, with the user agent fixed up to look like regular Chrome. `headed`: a window on your desktop.
+  - **Type:** string
+  - **Choices:** `virtual`, `headless`, `headed`
+  - **Default:** `virtual`
+
 - **`--headless`**
-  Whether to run in headless (no UI) mode.
+  Whether to run in headless (no UI) mode. Shorthand for --display-mode=headless.
   - **Type:** boolean
   - **Default:** `false`
 
@@ -262,6 +288,31 @@ Pass them via the `args` property in the JSON configuration. For example:
   }
 }
 ```
+
+## Shared browser
+
+By default every `chrome-devtools-mcp` instance that uses the same profile shares one Chrome:
+
+- The first instance that needs a browser launches Chrome detached from itself and connects to it over the DevTools port that Chrome writes to `DevToolsActivePort` in the profile directory. Later instances find that file and connect to the running Chrome.
+- Each instance works in tabs it opened itself. `list_pages` only shows those tabs, popups they spawned, and tabs created with `new_page`. Other instances' tabs are never listed, selected or closed.
+- When an instance shuts down it closes its own tabs and disconnects. Chrome stays running with a warm profile, so the next instance starts instantly.
+- Chrome is launched without `--enable-automation` and the other test-only switches Puppeteer adds, so `navigator.webdriver` is `false` and the "controlled by automated test software" bar never shows.
+- A watchdog process started next to Chrome shuts it down once no instance has had a tab open for `--browserIdleTimeoutMinutes` (60 by default). Only the blank keeper tab may remain open for the browser to count as idle. The next instance launches Chrome again. `--browserIdleTimeoutMinutes=0` keeps Chrome running forever.
+- Once the browser is older than `--browserMaxAgeHours` (24 by default) it is restarted the next time an instance connects or disconnects while no tab has left `about:blank`. `--browserMaxAgeHours=0` disables restarts.
+- Chrome listens for DevTools connections on `--sharedBrowserPort` (9222 by default), so other CDP tools can attach to the same browser at `http://127.0.0.1:9222`. For example browser-use's browser-harness (used by jev-ultrafast) picks it up with `BU_CDP_URL=http://127.0.0.1:9222`; give it a `BU_NAME` so it works in a dedicated tab that it closes on exit. The shared Chrome's idle shutdown and daily restart only happen while no tab, theirs included, is in use.
+- The profile directory holds the bookkeeping files `shared-browser.json` (launch time and pid), `shared-browser.log` (Chrome's stderr), `shared-browser-watchdog.log` and `shared-browser.lock` (held while an instance is launching).
+
+Use `--no-shared-browser` to go back to a private Chrome per instance that is closed on shutdown. `--isolated`, `--browserUrl`, `--wsEndpoint` and `--autoConnect` also bypass the shared browser.
+
+### Display mode
+
+`--displayMode` controls where the window of a browser launched by the server goes:
+
+- `virtual` (default): a real, headed Chrome on an invisible Xvfb display. Nothing appears on your desktop and sites see an ordinary browser. Needs Xvfb (`pacman -S xorg-server-xvfb`, `apt install xvfb`); without it, or on macOS and Windows, the server falls back to `headless`.
+- `headless`: Chrome's new headless mode. In the shared browser the user agent is also rewritten from `HeadlessChrome/…` to the regular `Chrome/…` string.
+- `headed`: a window on your desktop.
+
+This applies to the shared browser and to a private one started with `--no-shared-browser` (which runs its own Xvfb and stops it together with Chrome). `--headless` is kept as a shorthand for `--displayMode=headless`.
 
 ## Configuration file
 

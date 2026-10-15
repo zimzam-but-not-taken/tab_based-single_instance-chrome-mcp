@@ -349,6 +349,54 @@ describe('McpContext', () => {
     });
   });
 
+  it('with ownedPagesOnly only exposes its own pages and hands them back', async () => {
+    await withBrowser(async (browser, foreignPage) => {
+      await foreignPage.goto('about:blank');
+      const options = {
+        experimentalDevToolsDebugging: false,
+        performanceCrux: false,
+        ownedPagesOnly: true,
+      };
+      const context = await McpContext.from(
+        browser,
+        undefined,
+        options,
+        Locator,
+      );
+      try {
+        // Starts in a fresh tab of its own; the pre-existing tab is invisible.
+        const pages = context.getPages();
+        assert.strictEqual(pages.length, 1);
+        assert.notStrictEqual(pages[0]?.pptrPage, foreignPage);
+        assert.strictEqual(context.getSelectedMcpPage(), pages[0]);
+
+        // Popups opened from an owned page are owned too.
+        const popupTarget = browser.waitForTarget(target => {
+          return target.opener() === pages[0]?.pptrPage.target();
+        });
+        await pages[0]?.pptrPage.evaluate(() => {
+          window.open('about:blank');
+        });
+        await popupTarget;
+        assert.strictEqual((await context.createPagesSnapshot()).length, 2);
+
+        // The last owned page may be closed and is recreated on demand.
+        for (const page of context.getPages()) {
+          await context.closePage(page.id);
+        }
+        assert.strictEqual(context.getPages().length, 0);
+        await context.ensurePage();
+        assert.strictEqual(context.getPages().length, 1);
+
+        await context.closeOwnedPages();
+        assert.strictEqual(context.getPages().length, 0);
+        assert.ok(!foreignPage.isClosed(), 'other sessions keep their tabs');
+      } finally {
+        context.dispose();
+      }
+    });
+  });
+
   it('continues page ids across contexts so stale ids do not resolve', async () => {
     await withBrowser(async browser => {
       const options = {

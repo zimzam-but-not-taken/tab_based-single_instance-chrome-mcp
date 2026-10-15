@@ -176,6 +176,19 @@ export class McpServer {
    */
   async close(): Promise<void> {
     try {
+      // With a shared browser, hand our tabs back before letting go of the
+      // browser. Bounded so a hung tab cannot stall shutdown.
+      const context = this.#context;
+      if (context) {
+        await Promise.race([
+          context.closeOwnedPages(),
+          new Promise<void>(resolve => setTimeout(resolve, 3_000).unref()),
+        ]);
+      }
+    } catch (err) {
+      logger?.('Failed to close owned pages', err);
+    }
+    try {
       this.#context?.dispose();
     } catch (err) {
       logger?.('Failed to dispose context', err);
@@ -274,6 +287,8 @@ export class McpServer {
         // Surfaces a one-time note in the next response after a reconnect.
         reconnected: this.#context !== undefined,
         categoryExtensions: this.#serverArgs.categoryExtensions,
+        ownedPagesOnly: BrowserManager.isSharedMode(this.#serverArgs),
+        viewport: this.#serverArgs.viewport,
         onNotification: (message: string) => {
           void this.server
             .sendLoggingMessage({

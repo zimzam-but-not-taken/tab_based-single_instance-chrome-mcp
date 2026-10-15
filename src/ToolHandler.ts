@@ -286,6 +286,9 @@ export class ToolHandler {
           try {
             await validateToolFiles(this.tool, params, context);
             if (isPageScopedTool(this.tool)) {
+              // In a shared browser every tab may have been closed; reopen
+              // one rather than failing with "no page selected".
+              await context.ensurePage();
               const pageId =
                 typeof params.pageId === 'number' ? params.pageId : undefined;
               page =

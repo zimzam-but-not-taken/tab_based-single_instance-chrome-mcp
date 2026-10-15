@@ -76,9 +76,41 @@ export const browserOptions = {
       }
     },
   },
+  sharedBrowser: {
+    type: 'boolean',
+    description:
+      'Share one long-lived Chrome between all chrome-devtools-mcp instances using the same profile. The first instance launches Chrome detached, every instance works in its own tabs and closes them on shutdown, and Chrome keeps running (warm) for the next one. Ignored with --isolated, --browserUrl, --wsEndpoint or --autoConnect. Use --no-shared-browser to launch and close a private Chrome per instance.',
+    default: true,
+  },
+  sharedBrowserPort: {
+    type: 'number',
+    description:
+      'Local port the shared browser listens on for DevTools (CDP) connections, so other tools such as browser-use can attach to the same Chrome at http://127.0.0.1:<port>. 0 picks a random free port.',
+    default: 9222,
+  },
+  browserIdleTimeoutMinutes: {
+    type: 'number',
+    description:
+      'Shut the shared browser down once no instance has had a tab open for this many minutes. A watchdog process started next to Chrome does this, so it works after every instance has exited; the next instance simply launches Chrome again. 0 keeps Chrome running forever.',
+    default: 60,
+  },
+  browserMaxAgeHours: {
+    type: 'number',
+    description:
+      'Restart the shared browser once it is older than this many hours. The restart happens the next time an instance connects or disconnects while no tab is in use, so nobody is interrupted. 0 disables restarts.',
+    default: 24,
+  },
+  displayMode: {
+    type: 'string',
+    description:
+      'Where the browser window goes. `virtual`: a real window on an invisible Xvfb display (nothing appears on your desktop and sites see a normal browser; needs xvfb-run, falls back to headless). `headless`: no window, with the user agent fixed up to look like regular Chrome. `headed`: a window on your desktop.',
+    choices: ['virtual', 'headless', 'headed'] as const,
+    default: 'virtual' as const,
+  },
   headless: {
     type: 'boolean',
-    description: 'Whether to run in headless (no UI) mode.',
+    description:
+      'Whether to run in headless (no UI) mode. Shorthand for --display-mode=headless.',
     default: false,
   },
   executablePath: {

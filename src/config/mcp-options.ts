@@ -335,6 +335,8 @@ export const CONFLICTING_ARGS: Array<Array<keyof typeof mcpOptions>> = [
   ['userDataDir', 'isolated'],
   ['autoConnect', 'isolated'],
   ['autoConnect', 'executablePath'],
+  ['sharedBrowser', 'isolated', 'browserUrl', 'wsEndpoint', 'autoConnect'],
+  ['headless', 'displayMode'],
   ['blockedUrlPattern', 'allowedUrlPattern'],
   ['allowUnrestrictedPaths', 'filesystemRoot'],
   ['categoryPwa', 'autoConnect'],

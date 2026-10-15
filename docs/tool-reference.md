@@ -205,7 +205,7 @@
 
 ### `close_page`
 
-**Description:** Closes the page by its index. The last open page cannot be closed.
+**Description:** Closes the page by its index. Close pages you no longer need; with a shared browser the last page can be closed too and a blank one is reopened on demand.
 
 **Parameters:**
 

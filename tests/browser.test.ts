@@ -94,8 +94,11 @@ describe('browser', () => {
           '--custom-arg',
           '--proxy-server=http://localhost:8080',
           '--hide-crash-restore-bubble',
+          '--no-default-browser-check',
+          '--disable-blink-features=AutomationControlled',
           '--screen-info={3840x2160}',
         ],
+        ignoreDefaultArgs: ['--enable-automation'],
       });
 
       await manager.close();
@@ -106,6 +109,7 @@ describe('browser', () => {
     it('does not pass a channel to Puppeteer when executablePath is set', async () => {
       const pptrBrowser = createMockPuppeteerBrowser();
       const launchStub = sinon.stub(puppeteer, 'launch').resolves(pptrBrowser);
+      sinon.stub(BrowserManager, 'startVirtualDisplay').resolves(undefined);
 
       const args = createMockParsedArguments({
         isolated: true,
@@ -119,6 +123,60 @@ describe('browser', () => {
       sinon.assert.calledOnceWithMatch(launchStub, {
         channel: undefined,
         executablePath: '/path/to/chrome',
+      });
+    });
+
+    it('launches a private browser on a virtual display and stops it with the browser', async () => {
+      const pptrBrowser = createMockPuppeteerBrowser();
+      const launchStub = sinon.stub(puppeteer, 'launch').resolves(pptrBrowser);
+      const closeDisplay = sinon.stub();
+      sinon
+        .stub(BrowserManager, 'startVirtualDisplay')
+        .resolves({display: ':42', close: closeDisplay});
+
+      const manager = new BrowserManager(
+        createMockParsedArguments({
+          isolated: true,
+          sharedBrowser: false,
+          displayMode: 'virtual',
+        }),
+      );
+      await manager.ensureBrowser();
+
+      sinon.assert.calledOnceWithMatch(
+        launchStub,
+        sinon.match({
+          headless: false,
+          env: sinon.match({DISPLAY: ':42', WAYLAND_DISPLAY: undefined}),
+          args: sinon.match.array.contains([
+            '--ozone-platform=x11',
+            '--window-size=1920,1080',
+          ]),
+        }),
+      );
+      sinon.assert.notCalled(closeDisplay);
+
+      pptrBrowser.emit('disconnected', undefined);
+      sinon.assert.calledOnceWithExactly(closeDisplay);
+    });
+
+    it('launches a private browser headless when no virtual display is available', async () => {
+      const pptrBrowser = createMockPuppeteerBrowser();
+      const launchStub = sinon.stub(puppeteer, 'launch').resolves(pptrBrowser);
+      sinon.stub(BrowserManager, 'startVirtualDisplay').resolves(undefined);
+
+      const manager = new BrowserManager(
+        createMockParsedArguments({
+          isolated: true,
+          sharedBrowser: false,
+          displayMode: 'virtual',
+        }),
+      );
+      await manager.ensureBrowser();
+
+      sinon.assert.calledOnceWithMatch(launchStub, {
+        headless: true,
+        env: undefined,
       });
     });
 
@@ -649,6 +707,7 @@ describe('browser', () => {
         createMockParsedArguments({
           headless: true,
           isolated: false,
+          sharedBrowser: false,
           userDataDir: folderPath,
           executablePath: await executablePath(),
         }),
@@ -660,6 +719,7 @@ describe('browser', () => {
             createMockParsedArguments({
               headless: true,
               isolated: false,
+              sharedBrowser: false,
               userDataDir: folderPath,
               executablePath: await executablePath(),
             }),
@@ -691,6 +751,7 @@ describe('browser', () => {
         createMockParsedArguments({
           headless: true,
           isolated: false,
+          sharedBrowser: false,
           userDataDir: folderPath,
           executablePath: await executablePath(),
           viewport: {
@@ -726,6 +787,7 @@ describe('browser', () => {
         createMockParsedArguments({
           headless: true,
           isolated: false,
+          sharedBrowser: false,
           userDataDir: folderPath,
           executablePath: await executablePath(),
           chromeArg: ['--remote-debugging-port=0'],
