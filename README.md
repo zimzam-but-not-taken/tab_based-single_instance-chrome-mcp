@@ -1,6 +1,6 @@
 # chrome-devtools-mcp (shared-browser fork)
 
-My fork of Google's [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp). Upstream starts a fresh, visibly automated Chrome for every MCP instance. This fork runs **one warm Chrome that everything shares**: Claude Code over MCP, jev-ultrafast's browser-harness, and ai_dev's weblogin (go-rod) over CDP on `:9222`. The browser runs on an invisible display and is set up to **look like an ordinary browser** to the sites it visits.
+My fork of Google's [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp). Upstream starts a fresh, visibly automated Chrome for every MCP instance. This fork runs **one warm Chrome that everything shares**: Claude Code over MCP, jev-ultrafast's browser-harness, etc. The browser runs on an invisible display and is set up to **look like an ordinary browser** to the sites it visits.
 
 The MCP tools (navigation, input, snapshots, network, Lighthouse, …) are upstream's, unchanged: see the [tool reference](./docs/tool-reference.md). Everything below is what the fork changes and how I run it. This repo is never merged upstream, so these docs only cover this fork.
 
