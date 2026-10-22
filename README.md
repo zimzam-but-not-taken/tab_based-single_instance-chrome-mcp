@@ -87,6 +87,21 @@ If you also have the official chrome-devtools-mcp plugin or server installed, di
 
 After pulling changes, run `npm run build` again.
 
+### Starting the shared Chrome without an MCP client
+
+The bundled `chrome-devtools` CLI runs the same server as a background daemon, so you can bring the shared Chrome up from a terminal, for example for jev-ultrafast or when your MCP client is down:
+
+```sh
+chrome-devtools start --no-isolated \
+  --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile"
+chrome-devtools list_pages   # Chrome only launches on the first tool call
+curl http://127.0.0.1:9222/json/version
+```
+
+Both flags are needed. In CLI mode `--isolated` is on by default, which bypasses the shared browser and gives you a throwaway Puppeteer Chrome with a temporary profile and the automation switches. Without `--userDataDir` the CLI also uses its own `~/.cache/chrome-devtools-mcp-cli` profile instead of the one MCP instances share. Pass any other server flags (e.g. `--proxyServer`) the same way you would in your MCP client config.
+
+`chrome-devtools status` and `chrome-devtools stop` manage the daemon. Stopping it leaves Chrome running; it closes itself after the idle timeout as usual. If the `chrome-devtools` command isn't on your `PATH`, run `node build/src/bin/chrome-devtools.js` instead.
+
 ## Where things live
 
 Everything is in the profile directory, `~/.cache/chrome-devtools-mcp/chrome-profile` by default:

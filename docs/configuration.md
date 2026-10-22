@@ -304,6 +304,8 @@ By default every `chrome-devtools-mcp` instance that uses the same profile share
 
 Use `--no-shared-browser` to go back to a private Chrome per instance that is closed on shutdown. `--isolated`, `--browserUrl`, `--wsEndpoint` and `--autoConnect` also bypass the shared browser.
 
+The `chrome-devtools` CLI defaults to `--isolated` and to a separate `~/.cache/chrome-devtools-mcp-cli` profile. To start or use the shared Chrome from the CLI, pass `--no-isolated --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile"` to `chrome-devtools start`. See [Starting the shared Chrome without an MCP client](../README.md#starting-the-shared-chrome-without-an-mcp-client).
+
 ### Display mode
 
 `--displayMode` controls where the window of a browser launched by the server goes:
