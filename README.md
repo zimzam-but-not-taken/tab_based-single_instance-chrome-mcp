@@ -20,17 +20,6 @@ curl -s http://127.0.0.1:9222/json/version  # up?
 - `--proxyServer` is Caido. `--proxyDomains` sends **only** the target's domains (and their subdomains) through it; everything else connects directly. Repeat the flag or comma-separate.
 - Everything else uses the defaults: `virtual` display (real window on an invisible Xvfb display), real GPU, port 9222.
 
-### What connects to it
-
-| Client          | How                                                                                                                           |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code     | MCP server `chrome-devtools-mcp` (global npm link to this repo) in `~/.claude.json`. Opens its own tabs in the shared Chrome. |
-| jev-ultrafast   | browser-harness with `BU_CDP_URL=http://127.0.0.1:9222` and a `BU_NAME`.                                                      |
-| ai_dev weblogin | `shared/go_pkg/browser.Connect()` → `:9222` (go-rod, with `NoDefaultDevice()` so rod doesn't override the User-Agent).        |
-| anything else   | any CDP client on `http://127.0.0.1:9222`.                                                                                    |
-
-Each client works in its own tabs and closes them when done; nobody gets a separate Chrome.
-
 ### Changing flags / restarting
 
 **Flags only apply when Chrome launches, and whoever launches it decides them.** If Chrome is already running, `start` and MCP instances just attach, and their flags are ignored. If Chrome closed itself after being idle, the next client to need it launches it with _its_ flags. So keep the MCP config's flags in line with the `start` command above (e.g. the same `--proxyServer` / `--proxyDomains`).
