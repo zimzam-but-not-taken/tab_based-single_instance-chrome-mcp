@@ -140,6 +140,18 @@ export const browserOptions = {
     type: 'string',
     description: `Proxy server configuration for Chrome passed as --proxy-server when launching the browser. See https://www.chromium.org/developers/design-documents/network-settings/ for details.`,
   },
+  gpu: {
+    type: 'boolean',
+    description:
+      "Render with the machine's GPU (ANGLE over EGL) in `virtual` and `headless` mode on Linux, so WebGL reports the real graphics card instead of SwiftShader, Chrome's software renderer that sites read as a sign of automation. Falls back to SwiftShader where there is no usable GPU. `--no-gpu` keeps SwiftShader.",
+    default: true,
+  },
+  proxyDomains: {
+    type: 'array',
+    string: true,
+    description:
+      'Send only these domains (and their subdomains) through --proxyServer; everything else connects directly. For example `--proxyDomains=example.com --proxyDomains=example.org`. Without it, all traffic uses the proxy.',
+  },
   chromeArg: {
     type: 'array',
     string: true,

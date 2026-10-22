@@ -73,7 +73,79 @@ export interface SharedLaunchOptions {
   debuggingPort?: number;
   userAgent?: string;
   proxyServer?: string;
+  // When set, only these domains (and subdomains) use proxyServer.
+  proxyDomains?: readonly string[];
+  // Render with the real GPU where Chrome would otherwise use SwiftShader.
+  gpu?: boolean;
   extraArgs?: readonly string[];
+}
+
+/**
+ * Flags that put WebGL on the machine's GPU. Without a real X server (Xvfb)
+ * or in headless mode Chrome falls back to SwiftShader, and a WebGL renderer
+ * of "SwiftShader" is a well-known automation tell. ANGLE's EGL backend
+ * reaches the GPU through its render node (/dev/dri/renderD*) without needing
+ * the display, so WebGL reports e.g. "Mesa Intel(R) Iris(R) Xe Graphics".
+ * A headed browser already uses the GPU; other platforms are left alone.
+ */
+export function buildGpuArgs(
+  displayMode: DisplayMode,
+  gpu = true,
+  platform: NodeJS.Platform = os.platform(),
+): string[] {
+  if (!gpu || platform !== 'linux' || displayMode === 'headed') {
+    return [];
+  }
+  return ['--use-angle=gl-egl'];
+}
+
+/**
+ * Chrome's proxy flags. With `proxyDomains`, a PAC script (inline, as a data:
+ * URL) sends only those domains and their subdomains to the proxy and the
+ * rest direct; otherwise everything goes through `--proxy-server`.
+ */
+export function buildProxyArgs(
+  proxyServer: string | undefined,
+  proxyDomains: readonly string[] = [],
+): string[] {
+  if (!proxyServer) {
+    return [];
+  }
+  const domains = proxyDomains
+    .flatMap(d => d.split(','))
+    .map(d =>
+      d
+        .trim()
+        .toLowerCase()
+        .replace(/^\*?\./, ''),
+    )
+    .filter(Boolean);
+  if (domains.length === 0) {
+    return [`--proxy-server=${proxyServer}`];
+  }
+  const url = new URL(
+    proxyServer.includes('://') ? proxyServer : `http://${proxyServer}`,
+  );
+  const kind =
+    {
+      http: 'PROXY',
+      https: 'HTTPS',
+      socks4: 'SOCKS',
+      socks5: 'SOCKS5',
+      socks: 'SOCKS',
+    }[url.protocol.replace(':', '')] ?? 'PROXY';
+  const pac = `function FindProxyForURL(url, host) {
+  var d = ${JSON.stringify(domains)};
+  host = host.toLowerCase();
+  for (var i = 0; i < d.length; i++) {
+    if (host === d[i] || dnsDomainIs(host, '.' + d[i])) return '${kind} ${url.host}';
+  }
+  return 'DIRECT';
+}`;
+  const b64 = Buffer.from(pac).toString('base64');
+  return [
+    `--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${b64}`,
+  ];
 }
 
 function delay(ms: number): Promise<void> {
@@ -269,6 +341,8 @@ export function buildSharedChromeArgs(
     displayMode,
     userAgent,
     proxyServer,
+    proxyDomains,
+    gpu,
     extraArgs,
     debuggingPort,
   } = options;
@@ -286,7 +360,7 @@ export function buildSharedChromeArgs(
   ];
   if (displayMode === 'virtual') {
     // Keep Chrome on the Xvfb X server even when the desktop session is
-    // Wayland, and let WebGL work without a real GPU.
+    // Wayland; SwiftShader stays allowed as WebGL's fallback without a GPU.
     args.push('--ozone-platform=x11', '--enable-unsafe-swiftshader');
   }
   if (displayMode === 'headless') {
@@ -295,9 +369,8 @@ export function buildSharedChromeArgs(
       args.push(`--user-agent=${userAgent}`);
     }
   }
-  if (proxyServer) {
-    args.push(`--proxy-server=${proxyServer}`);
-  }
+  args.push(...buildGpuArgs(displayMode, gpu));
+  args.push(...buildProxyArgs(proxyServer, proxyDomains));
   args.push(...(extraArgs ?? []));
   if (args.every(arg => arg.startsWith('-'))) {
     args.push('about:blank');

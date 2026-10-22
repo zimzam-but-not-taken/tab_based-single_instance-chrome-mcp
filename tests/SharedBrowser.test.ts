@@ -13,6 +13,8 @@ import sinon from 'sinon';
 
 import {
   acquireLaunchLock,
+  buildGpuArgs,
+  buildProxyArgs,
   buildRegularUserAgent,
   buildSharedChromeArgs,
   countBusyPages,
@@ -81,6 +83,71 @@ describe('SharedBrowser', () => {
       );
       assert.match(buildRegularUserAgent(155, 'darwin'), /Macintosh/);
       assert.match(buildRegularUserAgent(155, 'win32'), /Windows NT 10.0/);
+    });
+  });
+
+  describe('buildGpuArgs', () => {
+    it('puts WebGL on the GPU in virtual and headless mode on Linux', () => {
+      for (const mode of ['virtual', 'headless'] as const) {
+        assert.deepStrictEqual(buildGpuArgs(mode, true, 'linux'), [
+          '--use-angle=gl-egl',
+        ]);
+      }
+    });
+
+    it('leaves headed, other platforms and --no-gpu alone', () => {
+      assert.deepStrictEqual(buildGpuArgs('headed', true, 'linux'), []);
+      assert.deepStrictEqual(buildGpuArgs('virtual', true, 'darwin'), []);
+      assert.deepStrictEqual(buildGpuArgs('virtual', false, 'linux'), []);
+    });
+  });
+
+  describe('buildProxyArgs', () => {
+    // Runs the generated PAC the way Chrome does, with its dnsDomainIs helper.
+    function route(args: string[], host: string): string {
+      const b64 = args[0].split('base64,')[1];
+      const pac = Buffer.from(b64, 'base64').toString();
+      const find = new Function(
+        'dnsDomainIs',
+        `${pac}; return FindProxyForURL;`,
+      )((h: string, d: string) => h.endsWith(d));
+      return find(`https://${host}/`, host);
+    }
+
+    it('proxies everything without a domain list', () => {
+      assert.deepStrictEqual(buildProxyArgs('http://127.0.0.1:8080'), [
+        '--proxy-server=http://127.0.0.1:8080',
+      ]);
+      assert.deepStrictEqual(buildProxyArgs(undefined, ['example.com']), []);
+    });
+
+    it('proxies only the listed domains and their subdomains', () => {
+      const args = buildProxyArgs('http://127.0.0.1:8080', [
+        'Example.com',
+        '*.target.org,other.net',
+      ]);
+      assert.strictEqual(args.length, 1);
+      assert.ok(args[0].startsWith('--proxy-pac-url=data:'));
+      for (const host of [
+        'example.com',
+        'a.b.example.com',
+        'target.org',
+        'x.other.net',
+      ]) {
+        assert.strictEqual(route(args, host), 'PROXY 127.0.0.1:8080', host);
+      }
+      for (const host of [
+        'notexample.com',
+        'example.com.evil.io',
+        'client-api.arkoselabs.com',
+      ]) {
+        assert.strictEqual(route(args, host), 'DIRECT', host);
+      }
+    });
+
+    it('maps the proxy scheme to the PAC keyword', () => {
+      const args = buildProxyArgs('socks5://127.0.0.1:1080', ['example.com']);
+      assert.strictEqual(route(args, 'example.com'), 'SOCKS5 127.0.0.1:1080');
     });
   });
 

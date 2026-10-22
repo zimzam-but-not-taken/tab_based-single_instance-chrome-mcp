@@ -13,6 +13,8 @@ import type {ParsedArguments} from './config/ConfigParser.js';
 import {
   acquireLaunchLock,
   buildRegularUserAgent,
+  buildGpuArgs,
+  buildProxyArgs,
   countBusyPages,
   detectChromeMajorVersion,
   ensureWatchdog,
@@ -447,6 +449,8 @@ export class BrowserManager {
     const {
       executablePath: configuredExecutablePath,
       proxyServer,
+      proxyDomains,
+      gpu,
       chromeArg,
       sharedBrowserPort,
     } = this.#serverArgs;
@@ -480,6 +484,8 @@ export class BrowserManager {
         debuggingPort: sharedBrowserPort,
         userAgent,
         proxyServer,
+        proxyDomains,
+        gpu,
         extraArgs: chromeArg,
       },
       xvfbRunPath,
@@ -501,10 +507,10 @@ export class BrowserManager {
 
     const userDataDir = await this.#resolveUserDataDir();
 
-    const args: LaunchOptions['args'] = [...(this.#serverArgs.chromeArg ?? [])];
-    if (proxyServer) {
-      args.push(`--proxy-server=${proxyServer}`);
-    }
+    const args: LaunchOptions['args'] = [
+      ...(this.#serverArgs.chromeArg ?? []),
+      ...buildProxyArgs(proxyServer, this.#serverArgs.proxyDomains),
+    ];
     args.push(
       '--hide-crash-restore-bubble',
       '--no-default-browser-check',
@@ -523,6 +529,7 @@ export class BrowserManager {
       mode = virtualDisplay ? 'virtual' : 'headless';
     }
     const headless = mode === 'headless';
+    args.push(...buildGpuArgs(mode, this.#serverArgs.gpu));
     let env: Record<string, string | undefined> | undefined;
     if (virtualDisplay) {
       // Keep Chrome on the Xvfb X server even when the desktop session is

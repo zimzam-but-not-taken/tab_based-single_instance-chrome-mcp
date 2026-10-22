@@ -44,6 +44,7 @@ describe('cli args parsing', () => {
     browserIdleTimeoutMinutes: 60,
     browserMaxAgeHours: 24,
     displayMode: 'virtual',
+    gpu: true,
     headless: false,
     isolated: false,
     acceptInsecureCerts: false,
@@ -82,7 +83,7 @@ describe('cli args parsing', () => {
   it('parses with viaCli args', async () => {
     const args = parseConfig(['--viaCli']);
     assert.strictEqual(args.allowUnrestrictedPaths, true);
-    assert.strictEqual(args.headless, true);
+    assert.strictEqual(args.headless, false);
     assert.strictEqual(args.isolated, true);
     assert.strictEqual(args.memoryDebugging, true);
     assert.strictEqual(args.categoryExtensions, true);
@@ -816,7 +817,7 @@ describe('cli args parsing', () => {
       it(`applies viaCli defaults for ${flag}`, async () => {
         const args = parseConfig([flag]);
         assert.strictEqual(args.viaCli, true);
-        assert.strictEqual(args.headless, true);
+        assert.strictEqual(args.headless, false);
         assert.strictEqual(args.isolated, true);
         assert.strictEqual(args.memoryDebugging, true);
       });
@@ -837,7 +838,7 @@ describe('cli args parsing', () => {
       );
       const args = parseConfig(['--config', testConfig.path]);
       assert.strictEqual(args.viaCli, true);
-      assert.strictEqual(args.headless, true);
+      assert.strictEqual(args.headless, false);
       assert.strictEqual(args.isolated, true);
     });
 
@@ -902,7 +903,7 @@ describe('cli args parsing', () => {
       );
     }
 
-    assert.strictEqual(cliOptions.headless?.defaultDescription, 'true');
+    assert.strictEqual(cliOptions.headless?.defaultDescription, 'false');
     assert.strictEqual(cliOptions.memoryDebugging?.defaultDescription, 'true');
     assert.strictEqual(
       cliOptions.filesystemRoot?.defaultDescription,

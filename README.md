@@ -29,11 +29,25 @@ The tools themselves (navigation, input, snapshots, network, performance, Lighth
 | `headless`          | Chrome's new headless mode. In the shared browser the `HeadlessChrome` user agent is rewritten to the regular `Chrome/…` one.                                                 |
 | `headed`            | A normal window on your desktop.                                                                                                                                              |
 
-This applies both to the shared browser and to a private one (`--no-shared-browser`). `--headless` still works as a shorthand for `--displayMode=headless`.
+This applies both to the shared browser and to a private one (`--no-shared-browser`), and to the `chrome-devtools` CLI too: unlike upstream, it isn't headless by default. `--headless` still works as a shorthand for `--displayMode=headless`.
 
 ### Looks like a normal browser
 
 Chrome is launched without `--enable-automation` and Puppeteer's other test-only switches, and with `AutomationControlled` disabled. So `navigator.webdriver` is `false` and the "Chrome is being controlled by automated test software" bar never appears.
+
+Without a real display Chrome normally falls back to SwiftShader, its software renderer, and pages can read that from WebGL (`ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device …))`), a well-known automation tell. On Linux the fork renders with the machine's GPU in `virtual` and `headless` mode (`--use-angle=gl-egl`, which reaches the GPU through `/dev/dri/renderD*` without needing the display), so WebGL reports the real card, e.g. `ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2), OpenGL ES 3.2)`. Where there is no usable GPU, WebGL still falls back to SwiftShader. `--no-gpu` turns this off.
+
+In `virtual` mode the page also sees a normal screen (1920x1080), a real window size and full user-agent client hints. In `headless` mode the screen is 800x600, the window reports 0x0, and the `--user-agent` override that hides `HeadlessChrome` empties the high-entropy client hints, so prefer `virtual`.
+
+### Proxy only your targets
+
+`--proxyDomains` limits `--proxyServer` to the listed domains and their subdomains; everything else connects directly. For example, to record a target in an intercepting proxy without routing third-party traffic (captcha vendors, analytics, Google) through it:
+
+```sh
+--proxyServer=http://127.0.0.1:8080 --proxyDomains=example.com --proxyDomains=example.org
+```
+
+`example.com` covers `example.com` and `*.example.com`, but not `notexample.com`. Under the hood Chrome gets an inline PAC script instead of `--proxy-server`. The list is fixed when Chrome starts; restart the shared browser to change it.
 
 ### Other CDP tools can share the same Chrome
 
@@ -48,6 +62,8 @@ The shared Chrome listens on `http://127.0.0.1:9222` (`--sharedBrowserPort`), so
 | `--browserIdleTimeoutMinutes` | `60`      | Close the shared Chrome after this long with no tab in use. `0` keeps it running forever.                                                                                                                        |
 | `--browserMaxAgeHours`        | `24`      | Restart the shared Chrome once it is older than this, while idle. `0` disables restarts.                                                                                                                         |
 | `--displayMode`               | `virtual` | `virtual`, `headless` or `headed`, see above.                                                                                                                                                                    |
+| `--gpu`                       | `true`    | Render WebGL with the real GPU instead of SwiftShader in `virtual`/`headless` mode on Linux. `--no-gpu` keeps SwiftShader.                                                                                       |
+| `--proxyDomains`              |           | Send only these domains (and subdomains) through `--proxyServer`; the rest goes direct. Repeat the flag or comma-separate.                                                                                       |
 
 All other upstream options still work. See the [Configuration Guide](./docs/configuration.md#shared-browser) for the full list and more detail on the shared browser.
 
@@ -93,12 +109,13 @@ The bundled `chrome-devtools` CLI runs the same server as a background daemon, s
 
 ```sh
 chrome-devtools start --no-isolated \
-  --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile"
+  --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile" \
+  --proxyServer=http://127.0.0.1:8080 --proxyDomains=example.com   # optional
 chrome-devtools list_pages   # Chrome only launches on the first tool call
 curl http://127.0.0.1:9222/json/version
 ```
 
-Both flags are needed. In CLI mode `--isolated` is on by default, which bypasses the shared browser and gives you a throwaway Puppeteer Chrome with a temporary profile and the automation switches. Without `--userDataDir` the CLI also uses its own `~/.cache/chrome-devtools-mcp-cli` profile instead of the one MCP instances share. Pass any other server flags (e.g. `--proxyServer`) the same way you would in your MCP client config.
+Both flags are needed. In CLI mode `--isolated` is on by default, which bypasses the shared browser and gives you a throwaway Puppeteer Chrome with a temporary profile and the automation switches. Without `--userDataDir` the CLI also uses its own `~/.cache/chrome-devtools-mcp-cli` profile instead of the one MCP instances share. Pass any other server flags (e.g. `--proxyServer`) the same way you would in your MCP client config. The CLI runs in `--displayMode=virtual` with the GPU like the MCP server; upstream's CLI is headless by default, so a Chrome started by an older build of this fork may still be headless (`shared-browser.json` shows the `displayMode`). The shared Chrome keeps the flags it was launched with until it restarts, so stop it to apply new ones.
 
 `chrome-devtools status` and `chrome-devtools stop` manage the daemon. Stopping it leaves Chrome running; it closes itself after the idle timeout as usual. If the `chrome-devtools` command isn't on your `PATH`, run `node build/src/bin/chrome-devtools.js` instead.
 

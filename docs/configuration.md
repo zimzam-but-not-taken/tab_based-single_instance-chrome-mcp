@@ -130,6 +130,15 @@ The Chrome DevTools MCP server supports the following configuration option:
   Proxy server configuration for Chrome passed as --proxy-server when launching the browser. See https://www.chromium.org/developers/design-documents/network-settings/ for details.
   - **Type:** string
 
+- **`--gpu`**
+  Render with the machine's GPU (ANGLE over EGL) in `virtual` and `headless` mode on Linux, so WebGL reports the real graphics card instead of SwiftShader, Chrome's software renderer that sites read as a sign of automation. Falls back to SwiftShader where there is no usable GPU. `--no-gpu` keeps SwiftShader.
+  - **Type:** boolean
+  - **Default:** `true`
+
+- **`--proxyDomains`/ `--proxy-domains`**
+  Send only these domains (and their subdomains) through --proxyServer; everything else connects directly. For example `--proxyDomains=example.com --proxyDomains=example.org`. Without it, all traffic uses the proxy.
+  - **Type:** array
+
 - **`--chromeArg`/ `--chrome-arg`**
   Additional arguments for Chrome. Only applies when Chrome is launched by chrome-devtools-mcp.
   - **Type:** array
@@ -314,7 +323,17 @@ The `chrome-devtools` CLI defaults to `--isolated` and to a separate `~/.cache/c
 - `headless`: Chrome's new headless mode. In the shared browser the user agent is also rewritten from `HeadlessChrome/…` to the regular `Chrome/…` string.
 - `headed`: a window on your desktop.
 
-This applies to the shared browser and to a private one started with `--no-shared-browser` (which runs its own Xvfb and stops it together with Chrome). `--headless` is kept as a shorthand for `--displayMode=headless`.
+This applies to the shared browser and to a private one started with `--no-shared-browser` (which runs its own Xvfb and stops it together with Chrome), and to the `chrome-devtools` CLI, which unlike upstream isn't headless by default. `--headless` is kept as a shorthand for `--displayMode=headless`.
+
+`headless` gives itself away in ways `virtual` does not: an 800x600 screen behind a larger window, `outerWidth`/`outerHeight` of 0, and, because the `HeadlessChrome` user agent is replaced with `--user-agent`, empty high-entropy client hints (`platformVersion`, `architecture`, `fullVersionList`).
+
+### GPU
+
+On Linux, `virtual` and `headless` mode render with the machine's GPU (`--gpu`, on by default). Chrome is started with `--use-angle=gl-egl`: ANGLE's EGL backend reaches the GPU through its render node (`/dev/dri/renderD*`) without needing the display, so WebGL reports the real card (for example `ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2), OpenGL ES 3.2)`) instead of SwiftShader, Chrome's software renderer, which sites treat as a sign of automation. `--enable-unsafe-swiftshader` stays on, so WebGL still works through SwiftShader where there is no usable GPU. `headed` already uses the GPU. Pass `--no-gpu` to keep SwiftShader.
+
+### Proxy domains
+
+`--proxyDomains` limits `--proxyServer` to the listed domains and their subdomains (`example.com` covers `example.com` and `*.example.com`); everything else connects directly. Chrome gets an inline PAC script (`--proxy-pac-url=data:…`) in place of `--proxy-server`. The list is read when Chrome starts, so restart the shared browser after changing it.
 
 ## Configuration file
 

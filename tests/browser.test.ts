@@ -13,6 +13,7 @@ import {executablePath} from 'puppeteer';
 import sinon from 'sinon';
 
 import {BrowserManager} from '../src/BrowserManager.js';
+import {buildGpuArgs} from '../src/SharedBrowser.js';
 import {puppeteer, type Browser} from '../src/third_party/index.js';
 
 import {
@@ -96,6 +97,7 @@ describe('browser', () => {
           '--hide-crash-restore-bubble',
           '--no-default-browser-check',
           '--disable-blink-features=AutomationControlled',
+          ...buildGpuArgs('headless'),
           '--screen-info={3840x2160}',
         ],
         ignoreDefaultArgs: ['--enable-automation'],

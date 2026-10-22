@@ -224,9 +224,12 @@ export function getMcpOptionsForViaCli(): Record<
 
   return {
     ...mcpOptions,
+    // Upstream makes the CLI headless; here it uses --displayMode like the
+    // MCP server (virtual by default), so a browser started from the CLI
+    // doesn't carry headless tells (800x600 screen, 0x0 window, SwiftShader).
     headless: {
       ...mcpOptions.headless,
-      default: true,
+      default: false,
     },
     memoryDebugging: {
       ...mcpOptions.memoryDebugging,

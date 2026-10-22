@@ -163,7 +163,7 @@ describe('mcp-options steps', () => {
         viaCli: true,
         filesystemRoot: DEFAULT_FILESYSTEM_ROOT,
       });
-      assert.strictEqual(args.headless, true);
+      assert.strictEqual(args.headless, false);
       assert.strictEqual(args.isolated, true);
       assert.strictEqual(args.categoryExtensions, true);
       assert.strictEqual(args.allowUnrestrictedPaths, true);
