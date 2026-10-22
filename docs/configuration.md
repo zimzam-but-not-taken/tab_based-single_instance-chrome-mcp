@@ -1,6 +1,6 @@
 # Configuration
 
-The Chrome DevTools MCP server supports the following configuration option:
+Every server option, upstream's and the fork's. The list between the markers is generated from `src/config/*-options.ts` by `npm run gen`; don't edit it by hand. What the fork's options do, and how I use them, is in the [README](../README.md).
 
 <!-- BEGIN AUTO GENERATED OPTIONS -->
 
@@ -280,114 +280,44 @@ The Chrome DevTools MCP server supports the following configuration option:
 
 <!-- END AUTO GENERATED OPTIONS -->
 
-Pass them via the `args` property in the JSON configuration. For example:
+## Passing options
+
+As flags, to the MCP server in the client config or to `chrome-devtools start`:
 
 ```json
 {
   "mcpServers": {
     "chrome-devtools": {
-      "command": "npx",
+      "command": "chrome-devtools-mcp",
       "args": [
-        "chrome-devtools-mcp@latest",
-        "--channel=canary",
-        "--headless=true",
-        "--isolated=true"
+        "--proxyServer=http://127.0.0.1:8080",
+        "--proxyDomains=target.tld",
+        "--acceptInsecureCerts"
       ]
     }
   }
 }
 ```
 
-## Shared browser
-
-By default every `chrome-devtools-mcp` instance that uses the same profile shares one Chrome:
-
-- The first instance that needs a browser launches Chrome detached from itself and connects to it over the DevTools port that Chrome writes to `DevToolsActivePort` in the profile directory. Later instances find that file and connect to the running Chrome.
-- Each instance works in tabs it opened itself. `list_pages` only shows those tabs, popups they spawned, and tabs created with `new_page`. Other instances' tabs are never listed, selected or closed.
-- When an instance shuts down it closes its own tabs and disconnects. Chrome stays running with a warm profile, so the next instance starts instantly.
-- Chrome is launched without `--enable-automation` and the other test-only switches Puppeteer adds, so `navigator.webdriver` is `false` and the "controlled by automated test software" bar never shows.
-- A watchdog process started next to Chrome shuts it down once no instance has had a tab open for `--browserIdleTimeoutMinutes` (60 by default). Only the blank keeper tab may remain open for the browser to count as idle. The next instance launches Chrome again. `--browserIdleTimeoutMinutes=0` keeps Chrome running forever.
-- Once the browser is older than `--browserMaxAgeHours` (24 by default) it is restarted the next time an instance connects or disconnects while no tab has left `about:blank`. `--browserMaxAgeHours=0` disables restarts.
-- Chrome listens for DevTools connections on `--sharedBrowserPort` (9222 by default), so other CDP tools can attach to the same browser at `http://127.0.0.1:9222`. For example browser-use's browser-harness (used by jev-ultrafast) picks it up with `BU_CDP_URL=http://127.0.0.1:9222`; give it a `BU_NAME` so it works in a dedicated tab that it closes on exit. The shared Chrome's idle shutdown and daily restart only happen while no tab, theirs included, is in use.
-- The profile directory holds the bookkeeping files `shared-browser.json` (launch time and pid), `shared-browser.log` (Chrome's stderr), `shared-browser-watchdog.log` and `shared-browser.lock` (held while an instance is launching).
-
-Use `--no-shared-browser` to go back to a private Chrome per instance that is closed on shutdown. `--isolated`, `--browserUrl`, `--wsEndpoint` and `--autoConnect` also bypass the shared browser.
-
-The `chrome-devtools` CLI defaults to `--isolated` and to a separate `~/.cache/chrome-devtools-mcp-cli` profile. To start or use the shared Chrome from the CLI, pass `--no-isolated --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile"` to `chrome-devtools start`. See [Starting the shared Chrome without an MCP client](../README.md#starting-the-shared-chrome-without-an-mcp-client).
-
-### Display mode
-
-`--displayMode` controls where the window of a browser launched by the server goes:
-
-- `virtual` (default): a real, headed Chrome on an invisible Xvfb display. Nothing appears on your desktop and sites see an ordinary browser. Needs Xvfb (`pacman -S xorg-server-xvfb`, `apt install xvfb`); without it, or on macOS and Windows, the server falls back to `headless`.
-- `headless`: Chrome's new headless mode. In the shared browser the user agent is also rewritten from `HeadlessChrome/…` to the regular `Chrome/…` string.
-- `headed`: a window on your desktop.
-
-This applies to the shared browser and to a private one started with `--no-shared-browser` (which runs its own Xvfb and stops it together with Chrome), and to the `chrome-devtools` CLI, which unlike upstream isn't headless by default. `--headless` is kept as a shorthand for `--displayMode=headless`.
-
-`headless` gives itself away in ways `virtual` does not: an 800x600 screen behind a larger window, `outerWidth`/`outerHeight` of 0, and, because the `HeadlessChrome` user agent is replaced with `--user-agent`, empty high-entropy client hints (`platformVersion`, `architecture`, `fullVersionList`).
-
-### GPU
-
-On Linux, `virtual` and `headless` mode render with the machine's GPU (`--gpu`, on by default). Chrome is started with `--use-angle=gl-egl`: ANGLE's EGL backend reaches the GPU through its render node (`/dev/dri/renderD*`) without needing the display, so WebGL reports the real card (for example `ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2), OpenGL ES 3.2)`) instead of SwiftShader, Chrome's software renderer, which sites treat as a sign of automation. `--enable-unsafe-swiftshader` stays on, so WebGL still works through SwiftShader where there is no usable GPU. `headed` already uses the GPU. Pass `--no-gpu` to keep SwiftShader.
-
-### Proxy domains
-
-`--proxyDomains` limits `--proxyServer` to the listed domains and their subdomains (`example.com` covers `example.com` and `*.example.com`); everything else connects directly. Chrome gets an inline PAC script (`--proxy-pac-url=data:…`) in place of `--proxy-server`. The list is read when Chrome starts, so restart the shared browser after changing it.
+Launch flags (`--displayMode`, `--gpu`, `--proxyServer`, `--proxyDomains`, `--chromeArg`, …) only take effect for the client that launches the shared Chrome; see [Changing flags / restarting](../README.md#changing-flags--restarting).
 
 ## Configuration file
 
-Instead of passing flags, you can put the options in a JSON file. Keys use the
-camelCase option names:
+Instead of flags, options can go in a JSON file, with camelCase keys:
 
 ```json
 {
-  "headless": true,
-  "channel": "canary",
-  "memoryDebugging": true,
-  "blockedUrlPattern": ["*://*.example.com/*"]
+  "proxyServer": "http://127.0.0.1:8080",
+  "proxyDomains": ["target.tld"],
+  "browserIdleTimeoutMinutes": 120
 }
 ```
 
-The server uses the first config file it finds in the following locations,
-from highest to lowest priority. Config files are not merged.
+The server uses the first file it finds, highest priority first (files are not merged):
 
-1. The path passed via `--config`.
-2. `cd4a.config.json` in the current working directory.
-3. `cd4a.config.json` in the `$PLUGIN_DATA` directory, when running as an
-   [agent plugin](https://agent-plugins.org/specification).
-4. The global config file:
-   - macOS and Linux: `$XDG_CONFIG_HOME/cd4a/config.json`, falling back to
-     `~/.config/cd4a/config.json`.
-   - Windows: `%LOCALAPPDATA%/Google/cd4a/config.json`, falling back to
-     `~/.config/cd4a/config.json`.
+1. the path passed with `--config`
+2. `cd4a.config.json` in the current working directory
+3. `cd4a.config.json` in `$PLUGIN_DATA`, when running as an agent plugin
+4. `$XDG_CONFIG_HOME/cd4a/config.json`, falling back to `~/.config/cd4a/config.json`
 
-Flags passed on the command line take precedence over the values in the config
-file.
-
-Set the `CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY` env variable to turn off the
-search for config files, for example in tests. A config file passed via
-`--config` is still used.
-
-## Connecting via WebSocket with custom headers
-
-You can connect directly to a Chrome WebSocket endpoint and include custom headers (e.g., for authentication):
-
-```json
-{
-  "mcpServers": {
-    "chrome-devtools": {
-      "command": "npx",
-      "args": [
-        "chrome-devtools-mcp@latest",
-        "--wsEndpoint=ws://127.0.0.1:9222/devtools/browser/<id>",
-        "--wsHeaders={\"Authorization\":\"Bearer YOUR_TOKEN\"}"
-      ]
-    }
-  }
-}
-```
-
-To get the WebSocket endpoint from a running Chrome instance, visit `http://127.0.0.1:9222/json/version` and look for the `webSocketDebuggerUrl` field.
-
-You can also run `npx chrome-devtools-mcp@latest --help` to see all available configuration options.
+Command-line flags override the file. `CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY` turns the search off (a `--config` file is still read).

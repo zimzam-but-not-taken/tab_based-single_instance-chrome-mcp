@@ -1,129 +1,61 @@
-# Chrome DevTools CLI
+# chrome-devtools CLI
 
-The `chrome-devtools-mcp` package includes an **experimental** CLI interface that allows you to interact with the browser directly from your terminal. This is particularly useful for debugging or when you want an agent to generate scripts that automate browser actions.
+`chrome-devtools` runs the MCP server as a background daemon and calls its tools from the terminal. I mostly use it to bring up the shared Chrome for jev-ultrafast and weblogin when no MCP client is running (see the [README](../README.md#how-i-run-it)).
 
-## Getting started
-
-Install the package globally to make the `chrome-devtools` command available:
+## Start the shared Chrome
 
 ```sh
-npm i chrome-devtools-mcp@latest -g
-chrome-devtools status # check if install worked.
+chrome-devtools start --no-isolated \
+  --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile" \
+  --proxyServer=http://127.0.0.1:8080 --proxyDomains=target.tld
+chrome-devtools list_pages   # Chrome launches on the first tool call
 ```
 
-The CLI enables unrestricted filesystem access by default. Use `--workspace`
-to limit file tools to specific directories. Repeat the flag for more than one
-directory.
-`--allow-unrestricted-paths` still works on its own for compatibility, but it
-cannot be combined with `--workspace`.
+How the CLI differs from the MCP server's defaults:
+
+- **`--isolated` is on by default**, which gives you a throwaway Puppeteer Chrome with a temporary profile and none of the shared-browser behaviour. `--no-isolated` plus the shared `--userDataDir` is what attaches to (or launches) the shared Chrome. Without `--userDataDir` the CLI uses its own `~/.cache/chrome-devtools-mcp-cli` profile.
+- **Not headless:** unlike upstream's CLI, it uses `--displayMode` (default `virtual`) with the GPU, like the MCP server. `--headless` still works.
+- **Unrestricted file access** by default; `--workspace=DIR` (repeatable) limits file tools to those directories.
+
+`start` forwards its flags to the daemon's server. They only affect Chrome if this call is the one that launches it; an already-running shared Chrome keeps its flags (see [Changing flags / restarting](../README.md#changing-flags--restarting)).
+
+## Daemon
 
 ```sh
-chrome-devtools start --workspace=/path/to/project --workspace=/path/to/output
+chrome-devtools status   # is the daemon running?
+chrome-devtools stop     # stop the daemon (Chrome keeps running and idles out after 60 min)
 ```
 
-## How it works
+The first tool call starts the daemon automatically if it isn't running, and the same daemon serves later calls. After `npm run build`, run `chrome-devtools start …` again so the daemon runs the new code (a version-mismatch warning tells you when it's stale).
 
-The CLI acts as a client to a background `chrome-devtools-mcp` daemon (uses Unix sockets on Linux/Mac and named pipes on Windows).
-
-- **Automatic Start**: The first time you call a tool (e.g., `list_pages`), the CLI automatically starts the MCP server and the browser in the background if they aren't already running.
-- **Persistence**: The same background instance is reused for subsequent commands, preserving the browser state (open pages, cookies, etc.).
-- **Manual Control**: You can explicitly manage the background process using `start`, `stop`, and `status`. The `start` command forwards all subsequent arguments to the underlying MCP server (e.g., `--headless`, `--userDataDir`) but not all args are supported. Run `chrome-devtools start --help` for supported args. In this fork the CLI is not headless by default: it uses `--displayMode` (default `virtual`, a real window on an invisible Xvfb display, rendered with the GPU) like the MCP server; pass `--headless` to get upstream's behaviour. Isolated is enabled by default unless `--userDataDir` is provided. Because isolated mode bypasses the fork's shared browser, use `chrome-devtools start --no-isolated --userDataDir="$HOME/.cache/chrome-devtools-mcp/chrome-profile"` to attach to (or launch) the shared Chrome that MCP instances use.
+## Calling tools
 
 ```sh
-# Check if the daemon is running
-chrome-devtools status
-
-# Navigate page 1 to a URL
-chrome-devtools navigate_page 1 --url "https://google.com"
-
-# Take a screenshot of page 1 and save it to a file
-chrome-devtools take_screenshot 1 --filePath screenshot.png
-
-# Stop the background daemon when finished
-chrome-devtools stop
+chrome-devtools <tool> [positional args] [--flags]
 ```
 
-## Command Usage
-
-The CLI only supports tools available in the MCP server without additional arguments (see [Tool reference](./tool-reference.md)).
-Thus, `--categoryExtensions` tools are currently not available in the CLI.
-
-```sh
-chrome-devtools <tool> [arguments] [flags]
-```
-
-- **Required Arguments**: Passed as positional arguments. Page-scoped tools require `<pageId>` as their first positional argument.
-- **Optional Arguments**: Passed as flags (e.g., `--filePath`, `--fullPage`).
-
-### Examples
-
-**New Page and Navigation:**
+Required arguments are positional; page-scoped tools take the page id first. Optional arguments are flags. Tools that need extra categories (e.g. `--categoryExtensions`) and a few others (`wait_for`, `fill_form`) aren't available in the CLI. See the [tool reference](./tool-reference.md) for every tool's arguments.
 
 ```sh
 chrome-devtools new_page "https://example.com"
-chrome-devtools navigate_page 1 --url "https://web.dev"
-```
-
-**Interaction:**
-
-```sh
-# Click an element by its UID from a snapshot on page 1
+chrome-devtools navigate_page 1 --url "https://example.org"
+chrome-devtools take_snapshot 1
 chrome-devtools click 1 "element-uid-123"
-
-# Fill a form field on page 1
 chrome-devtools fill 1 "input-uid-456" "search query"
-```
-
-**Script Evaluation:**
-
-- When `--categoryExtensions` and `--pageIdRouting` are enabled:
-  - Target a page using `--pageId <number>`: `chrome-devtools evaluate_script "() => document.title" --pageId 1`
-  - Target an extension service worker using `--serviceWorkerId <string>`: `chrome-devtools evaluate_script "() => self.registration.scope" --serviceWorkerId sw-1`
-
-```sh
-# Evaluate a JavaScript expression on page 1
 chrome-devtools evaluate_script "() => document.title" --pageId 1
-
-# Evaluate inside an extension service worker
-chrome-devtools evaluate_script "() => self.registration.scope" --serviceWorkerId sw-1
+chrome-devtools take_screenshot 1 --filePath shot.png
+chrome-devtools list_pages --output-format=json   # raw JSON instead of the summary
 ```
 
-**Analysis:**
+## Logs
 
-```sh
-# Run a Lighthouse audit on page 1 (defaults to navigation mode)
-chrome-devtools lighthouse_audit 1 --mode snapshot
-```
-
-## Output format
-
-By default, the CLI outputs a human-readable summary of the tool's result. For programmatic use, you can request raw JSON:
-
-```sh
-chrome-devtools list_pages --output-format=json
-```
-
-## Troubleshooting
-
-If the CLI hangs or fails to connect, try stopping the background process:
+The daemon doesn't write to the terminal. To capture its logs:
 
 ```sh
 chrome-devtools stop
+NODE_DEBUG=* chrome-devtools start --logFile=/tmp/cdt.log --no-isolated --userDataDir=…
 ```
 
-For more verbose logs, set the `NODE_DEBUG` environment variable. The background
-process does not write to the terminal, so restart it with `--logFile` to
-capture its logs in a file:
+## Implementation
 
-```sh
-NODE_DEBUG=* chrome-devtools start --logFile=/tmp/chrome-devtools.log
-chrome-devtools list_pages
-```
-
-## CLI generation
-
-Implemented in `scripts/generate-cli.ts`. Some commands are excluded from CLI
-generation such as `wait_for` and `fill_form`.
-
-`chrome-devtools-mcp` args are also filtered in `src/bin/chrome-devtools.ts`
-because not all args make sense in a CLI interface.
+Commands are generated from the tool definitions by `scripts/generate-cli.ts` (`npm run cli:generate`); server flags that make no sense for the CLI are filtered in `src/bin/chrome-devtools.ts`, and the CLI's own defaults are in `getMcpOptionsForViaCli` (`src/config/mcp-options.ts`).
